@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <title>ПроблемаТут</title>
+    <script src="https://api-maps.yandex.ru/2.1/?apikey=ae505fe1-c401-4eea-a9da-0ad10cdf70d9&lang=ru_RU" type="text/javascript"></script>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: Arial, sans-serif; background: #f4f4f4; }
+
+        .layout { display: flex; height: 100vh; }
+
+        .sidebar {
+            width: 380px;
+            background: white;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+            overflow-y: auto;
+            box-shadow: 2px 0 8px rgba(0,0,0,0.1);
+        }
+
+        h1 { font-size: 22px; color: #c0392b; }
+        h2 { font-size: 16px; margin-bottom: 8px; color: #333; }
+
+        input, textarea, select {
+            width: 100%;
+            padding: 8px;
+            border: 1px solid #ccc;
+            border-radius: 6px;
+            font-size: 14px;
+            margin-bottom: 8px;
+            font-family: inherit;
+        }
+
+        textarea { resize: vertical; min-height: 60px; }
+
+        button {
+            width: 100%;
+            padding: 10px;
+            background: #c0392b;
+            color: white;
+            border: none;
+            border-radius: 6px;
+            font-size: 15px;
+            cursor: pointer;
+        }
+        button:hover { background: #a93226; }
+
+        /* Фильтры */
+        .filters { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+        .filter-btn {
+            width: auto;
+            padding: 5px 10px;
+            font-size: 12px;
+            background: #eee;
+            color: #333;
+            border-radius: 20px;
+        }
+        .filter-btn.active { background: #333; color: white; }
+
+        /* Список проблем */
+        .problem-item {
+            background: #fafafa;
+            border-left: 4px solid #c0392b;
+            padding: 10px;
+            margin-bottom: 8px;
+            border-radius: 4px;
+            font-size: 13px;
+            position: relative;
+        }
+        .problem-item b { color: #333; }
+        .problem-item small { color: #888; }
+        .category-badge {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 10px;
+            font-size: 11px;
+            color: white;
+            margin-bottom: 4px;
+        }
+
+        /* Кнопка удаления */
+        .delete-btn {
+            position: absolute;
+            top: 8px;
+            right: 8px;
+            width: auto;
+            padding: 2px 6px;
+            font-size: 11px;
+            background: #e74c3c;
+            border-radius: 4px;
+            opacity: 0.7;
+        }
+        .delete-btn:hover { opacity: 1; background: #c0392b; }
+
+        #map { flex: 1; height: 100%; }
+    </style>
+</head>
+<body>
+    <div class="layout">
+        <div class="sidebar">
+            <h1>ПроблемаТут</h1>
+            <p style="font-size:13px; color:#666;">Отметь проблему своего района</p>
+
+            <div>
+                <h2>Добавить проблему</h2>
+                <input type="text" id="titleInput" placeholder="Название (например, разбитая дорога)">
+                <textarea id="descInput" placeholder="Описание проблемы..."></textarea>
+                <select id="categoryInput">
+                    <option value="road">🛣️ Дороги</option>
+                    <option value="trash">🗑️ Мусор</option>
+                    <option value="light">💡 Освещение</option>
+                    <option value="trees">🌳 Деревья/Зелень</option>
+                    <option value="parking">🚗 Парковка/Транспорт</option>
+                    <option value="housing">🏠 ЖКХ/Дом</option>
+                    <option value="other">📌 Другое</option>
+                </select>
+                <button onclick="addProblem()">Добавить на карту</button>
+                <p style="font-size:12px; color:#888; margin-top:6px;">
+                    Кликни по карте, чтобы выбрать место, затем заполни поля.
+                </p>
+            </div>
+
+            <div>
+                <h2>Все проблемы (<span id="count">0</span>)</h2>
+                <div class="filters" id="filters"></div>
+                <div id="problemsList"></div>
+            </div>
+        </div>
+
+        <div id="map"></div>
+    </div>
+
+    <script>
+        // ====== НАСТРОЙКИ ======
+        const MAP_CENTER = [55.862858, 37.697469];
+        const MAP_ZOOM = 14;
+
+        // Категории
+        const CATEGORIES = {
+            road:    { name: 'Дороги',          preset: 'islands#redIcon',    color: '#c0392b' },
+            trash:   { name: 'Мусор',           preset: 'islands#greenIcon',  color: '#27ae60' },
+            light:   { name: 'Освещение',       preset: 'islands#blueIcon',   color: '#2980b9' },
+            trees:   { name: 'Деревья/Зелень',  preset: 'islands#darkGreenIcon', color: '#1e8449' },
+            parking: { name: 'Парковка/Транспорт', preset: 'islands#orangeIcon', color: '#d35400' },
+            housing: { name: 'ЖКХ/Дом',         preset: 'islands#violetIcon', color: '#8e44ad' },
+            other:   { name: 'Другое',          preset: 'islands#grayIcon',   color: '#7f8c8d' }
+        };
+
+        // ====== ДАННЫЕ ======
+        let problems = JSON.parse(localStorage.getItem('problems') || '[]');
+        let selectedCoords = null;
+        let myMap;
+        let activeFilter = 'all';
+
+        // ====== ИНИЦИАЛИЗАЦИЯ ======
+        ymaps.ready(init);
+
+        function init() {
+            myMap = new ymaps.Map("map", {
+                center: MAP_CENTER,
+                zoom: MAP_ZOOM,
+                controls: [] // Убираем все стандартные кнопки (пробки, слои и т.д.)
+            });
+
+            myMap.events.add('click', function (e) {
+                selectedCoords = e.get('coords');
+                drawAllProblems();
+                let tempMark = new ymaps.Placemark(selectedCoords, {
+                    hintContent: 'Новая проблема будет здесь'
+                }, { preset: 'islands#blueIcon' });
+                myMap.geoObjects.add(tempMark);
+            });
+
+            drawAllProblems();
+            renderFilters();
+            renderList();
+        }
+
+        // ====== ДОБАВИТЬ ======
+        function addProblem() {
+            let title = document.getElementById('titleInput').value.trim();
+            let desc = document.getElementById('descInput').value.trim();
+            let category = document.getElementById('categoryInput').value;
+
+            if (!title) { alert('Введи название проблемы'); return; }
+            if (!selectedCoords) { alert('Кликни по карте, чтобы выбрать место'); return; }
+
+            problems.push({
+                id: Date.now(),
+                title: title,
+                desc: desc,
+                category: category,
+                coords: selectedCoords,
+                date: new Date().toLocaleDateString('ru-RU')
+            });
+
+            saveProblems();
+
+            document.getElementById('titleInput').value = '';
+            document.getElementById('descInput').value = '';
+            selectedCoords = null;
+
+            drawAllProblems();
+            renderList();
+        }
+
+        // ====== УДАЛИТЬ ======
+        function deleteProblem(id) {
+            if (!confirm('Удалить эту проблему?')) return;
+
+            problems = problems.filter(function(p) {
+                return p.id !== id;
+            });
+
+            saveProblems();
+            drawAllProblems();
+            renderList();
+        }
+
+        // ====== НАРИСОВАТЬ МЕТКИ ======
+        function drawAllProblems() {
+            myMap.geoObjects.removeAll();
+            problems.forEach(function(p) {
+                let cat = CATEGORIES[p.category] || CATEGORIES.other;
+                let mark = new ymaps.Placemark(p.coords, {
+                    hintContent: p.title,
+                    balloonContent: '<b>' + p.title + '</b><br>' +
+                                    '<span style="color:' + cat.color + '">' + cat.name + '</span><br>' +
+                                    p.desc + '<br><small>' + p.date + '</small>'
+                }, { preset: cat.preset });
+                myMap.geoObjects.add(mark);
+            });
+        }
+
+        // ====== ФИЛЬТРЫ ======
+        function renderFilters() {
+            let container = document.getElementById('filters');
+            container.innerHTML = '';
+
+            let allBtn = document.createElement('button');
+            allBtn.className = 'filter-btn' + (activeFilter === 'all' ? ' active' : '');
+            allBtn.textContent = 'Все';
+            allBtn.onclick = function() { activeFilter = 'all'; renderFilters(); renderList(); };
+            container.appendChild(allBtn);
+
+            for (let key in CATEGORIES) {
+                let btn = document.createElement('button');
+                btn.className = 'filter-btn' + (activeFilter === key ? ' active' : '');
+                btn.textContent = CATEGORIES[key].name;
+                btn.onclick = function() { activeFilter = key; renderFilters(); renderList(); };
+                container.appendChild(btn);
+            }
+        }
+
+        // ====== СПИСОК ======
+        function renderList() {
+            let list = document.getElementById('problemsList');
+            list.innerHTML = '';
+
+            let filtered = problems.filter(function(p) {
+                return activeFilter === 'all' || p.category === activeFilter;
+            });
+
+            document.getElementById('count').textContent = filtered.length;
+
+            filtered.slice().reverse().forEach(function(p) {
+                let cat = CATEGORIES[p.category] || CATEGORIES.other;
+                let div = document.createElement('div');
+                div.className = 'problem-item';
+                div.style.borderLeftColor = cat.color;
+
+                let deleteBtn = document.createElement('button');
+                deleteBtn.className = 'delete-btn';
+                deleteBtn.textContent = '✕';
+                deleteBtn.title = 'Удалить';
+                deleteBtn.onclick = function(e) {
+                    e.stopPropagation();
+                    deleteProblem(p.id);
+                };
+
+                div.innerHTML =
+                    '<span class="category-badge" style="background:' + cat.color + '">' + cat.name + '</span><br>' +
+                    '<b>' + p.title + '</b><br>' +
+                    (p.desc || '') +
+                    '<br><small>' + p.date + '</small>';
+                div.appendChild(deleteBtn);
+                list.appendChild(div);
+            });
+        }
+
+        // ====== СОХРАНЕНИЕ ======
+        function saveProblems() {
+            localStorage.setItem('problems', JSON.stringify(problems));
+        }
+    </script>
+</body>
+</html>
